@@ -1,0 +1,68 @@
+{============================================================================}
+{ KFM_CHAN 缠论主图指标（DLL 9号槽 kfm_chan_DLL.dll）                          }
+{ 内容：K线包含处理 / 分型 / 笔 / 线段 / 笔中枢                                 }
+{ 画线方法：主图叠加（建公式时必须勾选）                                        }
+{============================================================================}
+
+{—— 第一步：把 HIGH 序列存入 DLL（必须放在所有 TDXDLL9 调用的第一行） ——}
+HH:=TDXDLL9(1,HIGH,0,0);
+
+{—— 第二步：按选择器取各类缠论输出 ——}
+FXG:=TDXDLL9(2,LOW,1,0);    {顶分型值}
+FXD:=TDXDLL9(2,LOW,2,0);    {底分型值}
+ZG:=TDXDLL9(2,LOW,5,0);     {中枢上沿}
+ZD:=TDXDLL9(2,LOW,6,0);     {中枢下沿}
+MKH:=TDXDLL9(2,LOW,7,0);    {被合并K线组高}
+MKL:=TDXDLL9(2,LOW,8,0);    {被合并K线组低}
+BIG:=TDXDLL9(2,LOW,9,0);    {笔顶}
+BID:=TDXDLL9(2,LOW,10,0);   {笔底}
+XDG:=TDXDLL9(2,LOW,11,0);   {线段顶}
+XDD:=TDXDLL9(2,LOW,12,0);   {线段底}
+ZGS:=TDXDLL9(2,LOW,16,0);   {中枢起点标记（值为ZG）}
+ZGE:=TDXDLL9(2,LOW,17,0);   {中枢终点标记（值为ZG）}
+
+{⓪ K线：渐变实体样式（底层先画，缠论图层叠加其上）}
+PPBBP:=C>0;
+
+STICKLINE(PPBBP AND C>O,C,O,5,6),COLORBLACK;
+STICKLINE(PPBBP AND C<O,C,O,5,0),COLORBLACK;
+
+STICKLINE(C>O,C,O,3,0),COLOR000099;
+STICKLINE(C>O,C,O,2,0),COLOR0000CC;
+STICKLINE(C>O,C,O,1,0),COLOR0000FF;
+STICKLINE(C>O,C,O,0,0),COLORCC66FF;{阳实体}
+
+STICKLINE(O>=C,C,O,3,0),COLOR777700;
+STICKLINE(O>=C,C,O,2,0),COLOR999900;
+STICKLINE(O>=C,C,O,1,0),COLORBBBB00;
+STICKLINE(O>=C,C,O,0,0),COLOREEEE00;{阴实体}
+
+{① K线包含处理：被合并的K线组画灰色空心框}
+STICKLINE(MKH>0,MKH,MKL,1,1),COLORLIGRAY;
+
+{② 分型标注：顶/底}
+DRAWTEXT(FXG>0,FXG*1.002,'顶'),COLORRED;
+DRAWTEXT(FXD>0,FXD*0.998,'底'),COLORGREEN;
+
+{③ 笔：黄色折线连接 + 端点价格数值}
+DRAWLINE(BIG>0,BIG,BID>0,BID,0),COLORYELLOW;
+DRAWLINE(BID>0,BID,BIG>0,BIG,0),COLORYELLOW;
+DRAWNUMBER(BIG>0,BIG*1.004,BIG),COLORRED;
+DRAWNUMBER(BID>0,BID*0.996,BID),COLORGREEN;
+
+{④ 线段：品红粗折线 + 端点名称}
+DRAWLINE(XDG>0,XDG,XDD>0,XDD,0),COLORMAGENTA,LINETHICK2;
+DRAWLINE(XDD>0,XDD,XDG>0,XDG,0),COLORMAGENTA,LINETHICK2;
+DRAWTEXT(XDG>0,XDG*1.008,'段顶'),COLORMAGENTA;
+DRAWTEXT(XDD>0,XDD*0.992,'段底'),COLORLIBLUE;
+
+{⑤ 中枢：第二版——直接画矩形（四条边）+ ZG/ZD 数值标注}
+DRAWLINE(ZGS>0,ZGS,ZGE>0,ZGE,0),COLORYELLOW;      {上沿}
+DRAWLINE(ZGS>0,ZD,ZGE>0,ZD,0),COLORYELLOW;        {下沿}
+STICKLINE(ZGS>0,ZGS,ZD,0,0),COLORYELLOW;          {左边}
+STICKLINE(ZGE>0,ZGE,ZD,0,0),COLORYELLOW;          {右边}
+DRAWTEXT(ZGS>0,ZGS,STRCAT('ZG=',CON2STR(ZGS,2))),COLORYELLOW;
+DRAWTEXT(ZGS>0,ZD,STRCAT('ZD=',CON2STR(ZD,2))),COLORYELLOW;
+
+{第一版画法（柱状空心带），想用回第一版就删掉上面六行、启用下面一行}
+{STICKLINE(ZG>0,ZG,ZD,1,1),COLORYELLOW;}

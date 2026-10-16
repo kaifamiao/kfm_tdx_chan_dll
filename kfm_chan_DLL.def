@@ -1,0 +1,3 @@
+LIBRARY kfm_chan_DLL
+EXPORTS
+    RegisterTdxFunc
