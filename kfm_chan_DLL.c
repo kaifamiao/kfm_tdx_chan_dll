@@ -13,6 +13,7 @@
  *
  * 两次调用模式（通达信一次只能传 1 个序列 + 2 个常数）：
  *   功能号 1  KFM_SetH : pfINa = HIGH 序列 -> 存入 DLL 静态缓冲，回显输出
+ *   功能号 3  KFM_SetC : pfINa = CLOSE 序列 -> 存入（买卖点 MACD 背驰用），回显输出
  *   功能号 2  KFM_Out  : pfINa = LOW  序列 -> 存入后完成全部缠论计算，
  *                        pfINb[0] = 输出选择器 selector，pfINc[0]=777 时写调试日志
  *
@@ -31,6 +32,20 @@
  *   12  XDD   线段底值
  *   16  ZGS   中枢起点标记（起点bar输出ZG，供第二版矩形画法）
  *   17  ZGE   中枢终点标记（终点bar输出ZG）
+ *   18  ZDS   中枢起点标记（起点bar输出ZD）
+ *   19  ZDE   中枢终点标记（终点bar输出ZD）
+ *   20  B1    一买   21  B2 二买   22  B3 三买
+ *   23  S1    一卖   24  S2 二卖   25  S3 三卖
+ *        （买卖点需公式先调功能号3存入 CLOSE：CC:=TDXDLL9(3,CLOSE,0,0)）
+ *        信号只标在已确认端点上，出现后永不漂移；
+ *        pfINc[0]=1 时标在"确认bar"（信号出现时的新K线，不补历史）
+ *   26  PB1   预警一买   27  PB2 预警二买   28  PB3 预警三买
+ *   29  PS1   预警一卖   30  PS2 预警二卖   31  PS3 预警三卖
+ *        （预警层：分型密封（右侧2根合并K成型）即判定，
+ *          比确认层早约2-4根K线出现；密封后分型永不改写，
+ *          故预警信号同样固定不漂移。口径：预1买=底分型相对前底
+ *          分型创新低+MACD面积缩小+DIF抬高；预2买=预1买后不创新低
+ *          的首个底分型；预3买=中枢形成后突破ZG、回抽底分型守住ZG）
  *   90  诊断：常量 DataLen      91 诊断：常量 笔数
  *   92  诊断：常量 线段数       93 诊断：常量 中枢数
  *   94  诊断：常量 合并K线组数  95 诊断：常量 分型数
@@ -84,8 +99,9 @@ typedef struct { int type; int midx; float val; int bar; } FX; /* type +1顶 -1�
 static FX  g_fx[MAXP];
 static int g_nfx = 0;
 
-/* 笔端点（顶底交替） */
-typedef struct { int type; int midx; float price; int bar; } Pivot;
+/* 笔端点（顶底交替）；cfm = 确认bar（使本端点成立的那个反向分型所在bar），
+   末尾未确认端点 cfm = -1 */
+typedef struct { int type; int midx; float price; int bar; int cfm; } Pivot;
 static Pivot g_pv[MAXP];
 static int   g_npv = 0;
 
@@ -95,9 +111,21 @@ static Seg g_seg[MAXS];
 static int g_nseg = 0;
 
 /* 中枢 */
-typedef struct { float zg, zd; int start_bar, end_bar; } ZS;
+typedef struct { float zg, zd; int start_bar, end_bar; int sp, ep; } ZS;
 static ZS  g_zs[MAXS];
 static int g_nzs = 0;
+
+/* 买卖点（kind: 1=一买 2=二买 3=三买 4=一卖 5=二卖 6=三卖）
+   bar = 端点所在bar；cfm = 端点被确认的bar（实时锚定用） */
+typedef struct { int bar; float price; int kind; int cfm; } BSP;
+static BSP g_bsp[MAXP];
+static int g_nbsp = 0;
+
+/* CLOSE 序列与 MACD 构件 */
+static float g_C[MAXN];
+static int   g_Clen = 0;
+static float g_dif[MAXN], g_dea[MAXN], g_macd[MAXN];
+static float g_negpre[MAXN + 1], g_pospre[MAXN + 1];
 
 /* ---------------- 调试日志（默认静默，selector 带 777 才写） ---------------- */
 static void klog(const char *fmt, ...)
@@ -229,17 +257,20 @@ static void build_pivots(void)
             g_pv[g_npv].midx  = cm;
             g_pv[g_npv].price = cv;
             g_pv[g_npv].bar   = cb;
+            g_pv[g_npv].cfm   = b;   /* 确认bar = 触发确认的反向分型所在bar */
             g_npv++;
             ct = t; cm = m; cv = v; cb = b;
         }
         /* 间隔不够：忽略该分型，候选端点保持不变 */
     }
-    /* 末尾候选端点作为未确认端点照常输出 */
+    /* 末尾候选端点作为未确认端点照常输出（笔/线段实时延伸用），
+       但不参与买卖点信号（防漂移） */
     if (ct != 0 && g_npv < MAXP) {
         g_pv[g_npv].type  = ct;
         g_pv[g_npv].midx  = cm;
         g_pv[g_npv].price = cv;
         g_pv[g_npv].bar   = cb;
+        g_pv[g_npv].cfm   = -1;
         g_npv++;
     }
 }
@@ -418,6 +449,8 @@ static void build_zhongshu(void)
             g_zs[g_nzs].zd = zd;
             g_zs[g_nzs].start_bar = g_pv[i].bar;
             g_zs[g_nzs].end_bar   = g_pv[j].bar;
+            g_zs[g_nzs].sp = i;                 /* 起始笔（端点下标） */
+            g_zs[g_nzs].ep = j;                 /* 结束端点下标：离开笔为 j->j+1 */
             g_nzs++;
             i = j;
         } else {
@@ -426,7 +459,269 @@ static void build_zhongshu(void)
     }
 }
 
-/* ---------------- 全量计算 ---------------- */
+/* ---------------- 第 6 步：买卖点（MACD 背驰 + 中枢位置） ---------------- */
+
+/* MACD(12,26,9)，基于 CLOSE；同时维护正/负柱面积前缀和 */
+static void compute_macd(int n)
+{
+    int i;
+    float e12, e26, dea;
+    const float a12 = 2.0f / 13.0f, a26 = 2.0f / 27.0f, a9 = 2.0f / 10.0f;
+    e12 = e26 = g_C[0];
+    dea = 0.0f;
+    g_negpre[0] = g_pospre[0] = 0.0f;
+    for (i = 0; i < n; i++) {
+        float dif, m;
+        e12 += (g_C[i] - e12) * a12;
+        e26 += (g_C[i] - e26) * a26;
+        dif  = e12 - e26;
+        dea += (dif - dea) * a9;
+        m = 2.0f * (dif - dea);
+        g_dif[i] = dif;
+        g_dea[i] = dea;
+        g_macd[i] = m;
+        g_negpre[i + 1] = g_negpre[i] + (m < 0 ? -m : 0.0f);
+        g_pospre[i + 1] = g_pospre[i] + (m > 0 ?  m : 0.0f);
+    }
+}
+
+/* 笔 i（P[i]->P[i+1]）的力度统计：负/正柱面积、DIFF 区间极值 */
+static void leg_stats(int i, float *neg_area, float *pos_area,
+                      float *dif_min, float *dif_max)
+{
+    int b1 = g_pv[i].bar, b2 = g_pv[i + 1].bar, b;
+    float mn = 1e30f, mx = -1e30f;
+    if (b2 < b1) { int t = b1; b1 = b2; b2 = t; }
+    *neg_area = g_negpre[b2 + 1] - g_negpre[b1 + 1];
+    *pos_area = g_pospre[b2 + 1] - g_pospre[b1 + 1];
+    for (b = b1 + 1; b <= b2; b++) {
+        if (g_dif[b] < mn) mn = g_dif[b];
+        if (g_dif[b] > mx) mx = g_dif[b];
+    }
+    *dif_min = mn;
+    *dif_max = mx;
+}
+
+static void add_point(int pivot_idx, int kind)
+{
+    if (g_nbsp >= MAXP) return;
+    g_bsp[g_nbsp].bar   = g_pv[pivot_idx].bar;
+    g_bsp[g_nbsp].price = g_pv[pivot_idx].price;
+    g_bsp[g_nbsp].kind  = kind;
+    g_bsp[g_nbsp].cfm   = g_pv[pivot_idx].cfm;
+    g_nbsp++;
+}
+
+static void build_points(int n)
+{
+    int i, z;
+    int last_b1 = -1, b2_done = 1;
+    int last_s1 = -1, s2_done = 1;
+    g_nbsp = 0;
+    if (g_Clen != n) return;                /* 无 CLOSE 则跳过买卖点与预警 */
+    compute_macd(n);                        /* 预警层也依赖 MACD，先算 */
+    if (g_npv < 4) return;
+
+    /* —— 1买/2买/1卖/2卖：逐笔端点扫描（仅限已确认端点，排除末尾未确认端点） —— */
+    for (i = 2; i < g_npv - 1; i++) {
+        if (g_pv[i].type == -1) {                    /* 底端点 */
+            int is_b1 = 0;
+            if (i >= 3) {
+                int zi = -1;
+                for (z = g_nzs - 1; z >= 0; z--)     /* 最近已结束中枢 */
+                    if (g_zs[z].ep < i) { zi = z; break; }
+                if (zi >= 0 &&
+                    g_pv[i].price < g_zs[zi].zd &&          /* 跌破中枢下沿 */
+                    g_pv[i].price < g_pv[i - 2].price) {    /* 相对前底创新低 */
+                    float na1, pa1, mn1, mx1, na0, pa0, mn0, mx0;
+                    leg_stats(i - 1, &na1, &pa1, &mn1, &mx1);   /* 当前下跌笔 */
+                    leg_stats(i - 3, &na0, &pa0, &mn0, &mx0);   /* 前一下跌笔 */
+                    if (na1 < na0 && mn1 > mn0)                 /* 面积减小 + DIF抬高 */
+                        is_b1 = 1;
+                }
+            }
+            if (is_b1) {
+                add_point(i, 1);
+                last_b1 = i; b2_done = 0;
+            } else if (last_b1 >= 0 && !b2_done) {
+                if (g_pv[i].price > g_pv[last_b1].price) {      /* 不破一买低点 */
+                    add_point(i, 2);
+                    b2_done = 1;
+                } else {
+                    last_b1 = -1;                               /* 一买失效 */
+                }
+            }
+        } else {                                     /* 顶端点（镜像） */
+            int is_s1 = 0;
+            if (i >= 3) {
+                int zi = -1;
+                for (z = g_nzs - 1; z >= 0; z--)
+                    if (g_zs[z].ep < i) { zi = z; break; }
+                if (zi >= 0 &&
+                    g_pv[i].price > g_zs[zi].zg &&          /* 升破中枢上沿 */
+                    g_pv[i].price > g_pv[i - 2].price) {    /* 相对前顶创新高 */
+                    float na1, pa1, mn1, mx1, na0, pa0, mn0, mx0;
+                    leg_stats(i - 1, &na1, &pa1, &mn1, &mx1);   /* 当前上升笔 */
+                    leg_stats(i - 3, &na0, &pa0, &mn0, &mx0);   /* 前一上升笔 */
+                    if (pa1 < pa0 && mx1 < mx0)                 /* 面积减小 + DIF压低 */
+                        is_s1 = 1;
+                }
+            }
+            if (is_s1) {
+                add_point(i, 4);
+                last_s1 = i; s2_done = 0;
+            } else if (last_s1 >= 0 && !s2_done) {
+                if (g_pv[i].price < g_pv[last_s1].price) {      /* 不过一卖高点 */
+                    add_point(i, 5);
+                    s2_done = 1;
+                } else {
+                    last_s1 = -1;
+                }
+            }
+        }
+    }
+
+    /* —— 3买/3卖：逐中枢扫描（回抽端点须已确认：m < g_npv-1） —— */
+    for (z = 0; z < g_nzs; z++) {
+        int k, m;
+        float zg = g_zs[z].zg, zd = g_zs[z].zd;
+        /* 3买：中枢结束后向上离开（顶> ZG），第一次回抽笔底仍 > ZG */
+        for (k = g_zs[z].ep + 1; k < g_npv; k++)
+            if (g_pv[k].type == 1 && g_pv[k].price > zg) break;
+        if (k < g_npv) {
+            m = k + 1;
+            if (m < g_npv - 1 && g_pv[m].type == -1 && g_pv[m].price > zg)
+                add_point(m, 3);
+        }
+        /* 3卖：向下离开（底< ZD），第一次反弹笔顶仍 < ZD */
+        for (k = g_zs[z].ep + 1; k < g_npv; k++)
+            if (g_pv[k].type == -1 && g_pv[k].price < zd) break;
+        if (k < g_npv) {
+            m = k + 1;
+            if (m < g_npv - 1 && g_pv[m].type == 1 && g_pv[m].price < zd)
+                add_point(m, 6);
+        }
+    }
+}
+
+/* ---------------- 第 7 步：预警信号（分型级，密封分型永不改写） ---------------- */
+/* 密封定义：分型右侧已出现第 2 根合并K（midx <= nmk-3），
+   此后该分型的值与位置在任何后续数据下都不再改变 */
+
+static void bar_stats(int b1, int b2, float *neg_area, float *pos_area,
+                      float *dif_min, float *dif_max)
+{
+    int b;
+    float mn = 1e30f, mx = -1e30f;
+    if (b2 < b1) { int t = b1; b1 = b2; b2 = t; }
+    *neg_area = g_negpre[b2 + 1] - g_negpre[b1 + 1];
+    *pos_area = g_pospre[b2 + 1] - g_pospre[b1 + 1];
+    for (b = b1 + 1; b <= b2; b++) {
+        if (g_dif[b] < mn) mn = g_dif[b];
+        if (g_dif[b] > mx) mx = g_dif[b];
+    }
+    *dif_min = mn;
+    *dif_max = mx;
+}
+
+static void add_alert(int fx_idx, int kind)
+{
+    int m;
+    if (g_nbsp >= MAXP) return;
+    g_bsp[g_nbsp].bar   = g_fx[fx_idx].bar;
+    g_bsp[g_nbsp].price = g_fx[fx_idx].val;
+    g_bsp[g_nbsp].kind  = kind;                 /* 7=预1买 8=预2买 9=预3买 10=预1卖 11=预2卖 12=预3卖 */
+    m = g_fx[fx_idx].midx;
+    /* 预警确认bar = 使分型密封的那根合并K的起始原始bar（信号最早可知时刻） */
+    g_bsp[g_nbsp].cfm   = g_mk[m + 2].start;
+    g_nbsp++;
+}
+
+static void build_alerts(int n)
+{
+    int j, z;
+    int last_pb1 = -1, pb2_done = 1;
+    int last_ps1 = -1, ps2_done = 1;
+    if (g_Clen != n || g_nfx < 4) return;    /* 依赖 build_points 已算好 MACD */
+
+    /* —— 预1买/预2买/预1卖/预2卖：逐密封分型扫描 —— */
+    for (j = 1; j < g_nfx; j++) {
+        if (g_fx[j].midx > g_nmk - 3) break;     /* 未密封（midx 随 j 递增） */
+        if (g_fx[j].type == -1) {                /* 底分型 */
+            int is_pb1 = 0;
+            if (j >= 3) {
+                float na1, pa1, mn1, mx1, na0, pa0, mn0, mx0;
+                bar_stats(g_fx[j-1].bar, g_fx[j].bar,   &na1, &pa1, &mn1, &mx1);
+                bar_stats(g_fx[j-3].bar, g_fx[j-2].bar, &na0, &pa0, &mn0, &mx0);
+                if (g_fx[j].val < g_fx[j-2].val &&      /* 相对前底分型创新低 */
+                    na1 < na0 && mn1 > mn0)             /* 面积减小 + DIF抬高 */
+                    is_pb1 = 1;
+            }
+            if (is_pb1) {
+                add_alert(j, 7);
+                last_pb1 = j; pb2_done = 0;
+            } else if (last_pb1 >= 0 && !pb2_done) {
+                if (g_fx[j].val > g_fx[last_pb1].val) {
+                    add_alert(j, 8);
+                    pb2_done = 1;
+                } else {
+                    last_pb1 = -1;
+                }
+            }
+        } else {                                 /* 顶分型（镜像） */
+            int is_ps1 = 0;
+            if (j >= 3) {
+                float na1, pa1, mn1, mx1, na0, pa0, mn0, mx0;
+                bar_stats(g_fx[j-1].bar, g_fx[j].bar,   &na1, &pa1, &mn1, &mx1);
+                bar_stats(g_fx[j-3].bar, g_fx[j-2].bar, &na0, &pa0, &mn0, &mx0);
+                if (g_fx[j].val > g_fx[j-2].val &&      /* 相对前顶分型创新高 */
+                    pa1 < pa0 && mx1 < mx0)
+                    is_ps1 = 1;
+            }
+            if (is_ps1) {
+                add_alert(j, 10);
+                last_ps1 = j; ps2_done = 0;
+            } else if (last_ps1 >= 0 && !ps2_done) {
+                if (g_fx[j].val < g_fx[last_ps1].val) {
+                    add_alert(j, 11);
+                    ps2_done = 1;
+                } else {
+                    last_ps1 = -1;
+                }
+            }
+        }
+    }
+
+    /* —— 预3买/预3卖：中枢形成（第4个端点已确认）后，突破+回抽守住 —— */
+    for (z = 0; z < g_nzs; z++) {
+        int fbar, jj, k;
+        float zg = g_zs[z].zg, zd = g_zs[z].zd;
+        if (g_zs[z].sp + 3 > g_npv - 2) continue;      /* 形成端点未确认 */
+        fbar = g_pv[g_zs[z].sp + 3].bar;               /* 中枢形成bar（固定） */
+        k = -1;
+        for (jj = 0; jj < g_nfx; jj++) {               /* 预3买 */
+            if (g_fx[jj].midx > g_nmk - 3) break;
+            if (g_fx[jj].bar <= fbar) continue;
+            if (k < 0) {
+                if (g_fx[jj].type == 1 && g_fx[jj].val > zg) k = jj;
+            } else if (g_fx[jj].type == -1) {
+                if (g_fx[jj].val > zg) add_alert(jj, 9);
+                break;                               /* 首个回抽底分型即判定 */
+            }
+        }
+        k = -1;
+        for (jj = 0; jj < g_nfx; jj++) {               /* 预3卖（镜像） */
+            if (g_fx[jj].midx > g_nmk - 3) break;
+            if (g_fx[jj].bar <= fbar) continue;
+            if (k < 0) {
+                if (g_fx[jj].type == -1 && g_fx[jj].val < zd) k = jj;
+            } else if (g_fx[jj].type == 1) {
+                if (g_fx[jj].val < zd) add_alert(jj, 12);
+                break;
+            }
+        }
+    }
+}
 static void compute_all(int n)
 {
     build_merged(n);
@@ -434,6 +729,8 @@ static void compute_all(int n)
     build_pivots();
     build_segments();
     build_zhongshu();
+    build_points(n);
+    build_alerts(n);    /* 预警层：依赖 MACD（build_points 内已算）与分型/中枢 */
 }
 
 /* ---------------- 功能号 1：存 HIGH ---------------- */
@@ -450,17 +747,33 @@ void __cdecl KFM_SetH(int DataLen, float *pfOUT,
     for (i = 0; i < DataLen; i++) pfOUT[i] = g_H[i];   /* 回显，兼作恒等诊断 */
 }
 
+/* ---------------- 功能号 3：存 CLOSE（供 MACD 背驰判断） ---------------- */
+void __cdecl KFM_SetC(int DataLen, float *pfOUT,
+                      float *pfINa, float *pfINb, float *pfINc)
+{
+    int i;
+    (void)pfINb; (void)pfINc;
+    if (!pfOUT || !pfINa || DataLen <= 0) return;
+    if (DataLen > MAXN) DataLen = MAXN;
+    for (i = 0; i < DataLen; i++) g_C[i] = pfINa[i];
+    sanitize(g_C, DataLen);
+    g_Clen = DataLen;
+    for (i = 0; i < DataLen; i++) pfOUT[i] = g_C[i];
+}
+
 /* ---------------- 功能号 2：存 LOW + 计算 + 选择输出 ---------------- */
 void __cdecl KFM_Out(int DataLen, float *pfOUT,
                      float *pfINa, float *pfINb, float *pfINc)
 {
-    int i, sel, debug;
+    int i, sel, debug, anchor;
     (void)debug;
     if (!pfOUT || !pfINa || DataLen <= 0) return;
     if (DataLen > MAXN) DataLen = MAXN;
 
-    sel   = (pfINb && pfINb[0] == pfINb[0]) ? (int)(pfINb[0] + 0.5f) : 0;
-    debug = (pfINc && pfINc[0] == 777.0f) ? 1 : 0;
+    sel    = (pfINb && pfINb[0] == pfINb[0]) ? (int)(pfINb[0] + 0.5f) : 0;
+    debug  = (pfINc && pfINc[0] == 777.0f) ? 1 : 0;
+    /* 买卖点锚定：0=端点bar（默认，价格位置准确）；1=确认bar（信号出现时的新K线，不补课） */
+    anchor = (pfINc && pfINc[0] == 1.0f) ? 1 : 0;
 
     for (i = 0; i < DataLen; i++) pfOUT[i] = 0.0f;
 
@@ -507,8 +820,12 @@ void __cdecl KFM_Out(int DataLen, float *pfOUT,
             int b;
             int eb = g_zs[z].end_bar;
             if (eb >= DataLen) eb = DataLen - 1;
-            for (b = g_zs[z].start_bar; b <= eb; b++)
-                pfOUT[b] = (sel == 5) ? g_zs[z].zg : g_zs[z].zd;
+            for (b = g_zs[z].start_bar; b <= eb; b++) {
+                /* 共享边界 bar：先写者（前一个中枢）保留，
+                   防止旧版公式读连续序列画边时跨中枢粘连 */
+                if (pfOUT[b] == 0.0f)
+                    pfOUT[b] = (sel == 5) ? g_zs[z].zg : g_zs[z].zd;
+            }
         }
         break;
     }
@@ -550,13 +867,47 @@ void __cdecl KFM_Out(int DataLen, float *pfOUT,
         }
         break;
     }
-    case 16:  /* ZGS 中枢起点标记（起点bar输出ZG） */
-    case 17: {/* ZGE 中枢终点标记（终点bar输出ZG） */
+    case 16:  /* ZGS 中枢起点标记（起点bar输出ZG，供第二版矩形画法） */
+    case 17:  /* ZGE 中枢终点标记（终点bar输出ZG） */
+    case 18:  /* ZDS 中枢起点标记（起点bar输出ZD） */
+    case 19: {/* ZDE 中枢终点标记（终点bar输出ZD） */
         int z;
         for (z = 0; z < g_nzs; z++) {
-            int b = (sel == 16) ? g_zs[z].start_bar : g_zs[z].end_bar;
+            int b;
+            if (sel == 16 || sel == 18) {
+                b = g_zs[z].start_bar;
+                /* 与上一中枢终点同bar时右移1格，保证起/终标记严格交替 */
+                if (z > 0 && b == g_zs[z-1].end_bar && b < g_zs[z].end_bar)
+                    b++;
+            } else {
+                b = g_zs[z].end_bar;
+            }
             if (b >= DataLen) b = DataLen - 1;
-            if (b >= 0) pfOUT[b] = g_zs[z].zg;
+            if (b >= 0)
+                pfOUT[b] = (sel == 16 || sel == 17) ? g_zs[z].zg : g_zs[z].zd;
+        }
+        break;
+    }
+    case 20:  /* B1 一买 */
+    case 21:  /* B2 二买 */
+    case 22:  /* B3 三买 */
+    case 23:  /* S1 一卖 */
+    case 24:  /* S2 二卖 */
+    case 25:  /* S3 三卖 */
+    case 26:  /* PB1 预警一买 */
+    case 27:  /* PB2 预警二买 */
+    case 28:  /* PB3 预警三买 */
+    case 29:  /* PS1 预警一卖 */
+    case 30:  /* PS2 预警二卖 */
+    case 31: {/* PS3 预警三卖 */
+        int want = sel - 19;    /* 20-25 -> kind 1..6（确认层），26-31 -> kind 7..12（预警层） */
+        int q;
+        for (q = 0; q < g_nbsp; q++) {
+            if (g_bsp[q].kind != want) continue;
+            /* 锚定：1 且确认bar有效时标在确认bar，否则标在端点bar */
+            i = (anchor && g_bsp[q].cfm >= 0) ? g_bsp[q].cfm : g_bsp[q].bar;
+            if (i >= 0 && i < DataLen)
+                pfOUT[i] = g_bsp[q].price;
         }
         break;
     }
@@ -577,6 +928,7 @@ void __cdecl KFM_Out(int DataLen, float *pfOUT,
 PluginTCalcFuncInfo g_CalcFuncSets[] = {
     { 1, (pPluginFUNC)&KFM_SetH },
     { 2, (pPluginFUNC)&KFM_Out  },
+    { 3, (pPluginFUNC)&KFM_SetC },
     { 0, NULL }
 };
 

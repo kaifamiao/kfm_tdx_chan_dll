@@ -4,8 +4,9 @@
 { 画线方法：主图叠加（建公式时必须勾选）                                        }
 {============================================================================}
 
-{—— 第一步：把 HIGH 序列存入 DLL（必须放在所有 TDXDLL9 调用的第一行） ——}
+{—— 第一步：把 HIGH/CLOSE 序列存入 DLL（必须在所有 TDXDLL9(2,...) 之前） ——}
 HH:=TDXDLL9(1,HIGH,0,0);
+CC:=TDXDLL9(3,CLOSE,0,0);   {CLOSE 供买卖点 MACD 背驰判断}
 
 {—— 第二步：按选择器取各类缠论输出 ——}
 FXG:=TDXDLL9(2,LOW,1,0);    {顶分型值}
@@ -18,8 +19,22 @@ BIG:=TDXDLL9(2,LOW,9,0);    {笔顶}
 BID:=TDXDLL9(2,LOW,10,0);   {笔底}
 XDG:=TDXDLL9(2,LOW,11,0);   {线段顶}
 XDD:=TDXDLL9(2,LOW,12,0);   {线段底}
-ZGS:=TDXDLL9(2,LOW,16,0);   {中枢起点标记（值为ZG）}
-ZGE:=TDXDLL9(2,LOW,17,0);   {中枢终点标记（值为ZG）}
+ZGS:=TDXDLL9(2,LOW,16,0);   {中枢起点ZG}
+ZGE:=TDXDLL9(2,LOW,17,0);   {中枢终点ZG}
+ZDS:=TDXDLL9(2,LOW,18,0);   {中枢起点ZD}
+ZDE:=TDXDLL9(2,LOW,19,0);   {中枢终点ZD}
+B1:=TDXDLL9(2,LOW,20,0);    {一买}
+B2:=TDXDLL9(2,LOW,21,0);    {二买}
+B3:=TDXDLL9(2,LOW,22,0);    {三买}
+S1:=TDXDLL9(2,LOW,23,0);    {一卖}
+S2:=TDXDLL9(2,LOW,24,0);    {二卖}
+S3:=TDXDLL9(2,LOW,25,0);    {三卖}
+PB1:=TDXDLL9(2,LOW,26,0);   {预警一买（分型密封即出，早于确认层）}
+PB2:=TDXDLL9(2,LOW,27,0);   {预警二买}
+PB3:=TDXDLL9(2,LOW,28,0);   {预警三买}
+PS1:=TDXDLL9(2,LOW,29,0);   {预警一卖}
+PS2:=TDXDLL9(2,LOW,30,0);   {预警二卖}
+PS3:=TDXDLL9(2,LOW,31,0);   {预警三卖}
 
 {⓪ K线：渐变实体样式（底层先画，缠论图层叠加其上）}
 PPBBP:=C>0;
@@ -56,13 +71,43 @@ DRAWLINE(XDD>0,XDD,XDG>0,XDG,0),COLORMAGENTA,LINETHICK2;
 DRAWTEXT(XDG>0,XDG*1.008,'段顶'),COLORMAGENTA;
 DRAWTEXT(XDD>0,XDD*0.992,'段底'),COLORLIBLUE;
 
-{⑤ 中枢：第二版——直接画矩形（四条边）+ ZG/ZD 数值标注}
-DRAWLINE(ZGS>0,ZGS,ZGE>0,ZGE,0),COLORYELLOW;      {上沿}
-DRAWLINE(ZGS>0,ZD,ZGE>0,ZD,0),COLORYELLOW;        {下沿}
-STICKLINE(ZGS>0,ZGS,ZD,0,0),COLORYELLOW;          {左边}
-STICKLINE(ZGE>0,ZGE,ZD,0,0),COLORYELLOW;          {右边}
-DRAWTEXT(ZGS>0,ZGS,STRCAT('ZG=',CON2STR(ZGS,2))),COLORYELLOW;
-DRAWTEXT(ZGS>0,ZD,STRCAT('ZD=',CON2STR(ZD,2))),COLORYELLOW;
+{⑤ 中枢：第三版——纯STICKLINE四边矩形（DRAWLINE会把所有触发点连成折线，
+   产生跨中枢连线，故中枢不用DRAWLINE；上下沿为逐bar细柱，左右边用独立标记）}
+STICKLINE(ZG>0,ZG,ZG*1.003,1,0),COLORYELLOW;      {上沿}
+STICKLINE(ZG>0,ZD,ZD*0.997,1,0),COLORYELLOW;      {下沿}
+STICKLINE(ZGS>0,ZGS,ZDS,0,0),COLORYELLOW;         {左边}
+STICKLINE(ZGE>0,ZGE,ZDE,0,0),COLORYELLOW;         {右边}
+DRAWTEXT(ZGS>0,ZGS*1.006,'ZG'),COLORYELLOW;
+DRAWNUMBER(ZGS>0,ZGS,ZGS),COLORYELLOW;
+DRAWTEXT(ZGS>0,ZDS*0.994,'ZD'),COLORYELLOW;
+DRAWNUMBER(ZGS>0,ZDS,ZDS),COLORYELLOW;
 
-{第一版画法（柱状空心带），想用回第一版就删掉上面六行、启用下面一行}
+{⑥ 买卖点标注（笔级别，MACD背驰+中枢位置；只标已确认端点，永不漂移）}
+DRAWTEXT(B1>0,B1*0.985,'1买'),COLORRED;
+DRAWTEXT(B2>0,B2*0.985,'2买'),COLORLIRED;
+DRAWTEXT(B3>0,B3*0.985,'3买'),COLORMAGENTA;
+DRAWTEXT(S1>0,S1*1.015,'1卖'),COLORGREEN;
+DRAWTEXT(S2>0,S2*1.015,'2卖'),COLORLIGREEN;
+DRAWTEXT(S3>0,S3*1.015,'3卖'),COLORLIBLUE;
+
+{⑧ 预警信号：分型密封即出（比确认层早约2-4根K线），密封后固定不漂移}
+DRAWTEXT(PB1>0,PB1*0.978,'预1买'),COLORCYAN;
+DRAWTEXT(PB2>0,PB2*0.978,'预2买'),COLORCYAN;
+DRAWTEXT(PB3>0,PB3*0.978,'预3买'),COLORCYAN;
+DRAWTEXT(PS1>0,PS1*1.022,'预1卖'),COLORWHITE;
+DRAWTEXT(PS2>0,PS2*1.022,'预2卖'),COLORWHITE;
+DRAWTEXT(PS3>0,PS3*1.022,'预3卖'),COLORWHITE;
+
+{⑦ 实时锚定备选：第4参数传1，信号标在"确认bar"（信号出现时的新K线）上，
+   完全不补历史位置。想用就删掉上面六行、启用下面六行}
+{B1R:=TDXDLL9(2,LOW,20,1);}
+{B2R:=TDXDLL9(2,LOW,21,1);}
+{B3R:=TDXDLL9(2,LOW,22,1);}
+{S1R:=TDXDLL9(2,LOW,23,1);}
+{S2R:=TDXDLL9(2,LOW,24,1);}
+{S3R:=TDXDLL9(2,LOW,25,1);}
+{DRAWICON(B1R>0 OR B2R>0 OR B3R>0,LOW,1);}
+{DRAWICON(S1R>0 OR S2R>0 OR S3R>0,HIGH,2);}
+
+{备选：整面空心柱带（第一版风格），删掉上面八行、启用下面一行}
 {STICKLINE(ZG>0,ZG,ZD,1,1),COLORYELLOW;}

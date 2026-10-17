@@ -1,0 +1,73 @@
+{============================================================================
+ KFM_CHAN_BS  缠论买卖信号副图（配合主图 CHAN 使用）
+
+ 依赖：kfm_chan_DLL.dll 已绑定 9 号槽（TDXDLL9），主图 CHAN 公式可独立使用，
+       本副图只是同一 DLL 信号的另一种呈现。
+
+ 导入：功能 -> 公式系统 -> 公式管理器 -> 技术指标公式 -> 新建，
+       画线方法选【副图】，公式名称 KFM_CHAN_BS，粘贴本文件全文。
+
+ 读图：零轴上方 = 买入信号柱，零轴下方 = 卖出信号柱；
+       高柱 = 确认层（1买/2买/3买、1卖/2卖/3卖，反向笔成立后判定，最权威）；
+       矮柱 = 预警层（预1买/预2买/预3买、预1卖/预2卖/预3卖，
+       分型密封即判定，比确认层早约 2-4 根K线）。
+       两层信号一旦出现均永不移动、永不消失。
+
+ 锚定：每个 TDXDLL9 的第 4 参数由 0 改为 1，可切换为"确认bar锚定"
+      （信号标在判定成立的那根新K线上，完全不补历史）。
+ ============================================================================}
+
+{—— 数据存入：必须先 HIGH、CLOSE，再 LOW 触发计算 ——}
+HH:=TDXDLL9(1,HIGH,0,0);
+CC:=TDXDLL9(3,CLOSE,0,0);
+
+{—— 确认层买卖点 ——}
+B1:=TDXDLL9(2,LOW,20,0);
+B2:=TDXDLL9(2,LOW,21,0);
+B3:=TDXDLL9(2,LOW,22,0);
+S1:=TDXDLL9(2,LOW,23,0);
+S2:=TDXDLL9(2,LOW,24,0);
+S3:=TDXDLL9(2,LOW,25,0);
+
+{—— 预警层买卖点 ——}
+PB1:=TDXDLL9(2,LOW,26,0);
+PB2:=TDXDLL9(2,LOW,27,0);
+PB3:=TDXDLL9(2,LOW,28,0);
+PS1:=TDXDLL9(2,LOW,29,0);
+PS2:=TDXDLL9(2,LOW,30,0);
+PS3:=TDXDLL9(2,LOW,31,0);
+
+{—— 零轴 ——}
+零轴:0,COLORGRAY;
+
+{—— 确认层买点：零轴上方高柱 ——}
+STICKLINE(B1>0,0,3,3,0),COLORRED;
+STICKLINE(B2>0,0,2.5,3,0),COLORLIRED;
+STICKLINE(B3>0,0,2,3,0),COLORMAGENTA;
+DRAWTEXT(B1>0,3.3,'1买'),COLORRED;
+DRAWTEXT(B2>0,2.8,'2买'),COLORLIRED;
+DRAWTEXT(B3>0,2.3,'3买'),COLORMAGENTA;
+
+{—— 确认层卖点：零轴下方高柱 ——}
+STICKLINE(S1>0,0,-3,3,0),COLORGREEN;
+STICKLINE(S2>0,0,-2.5,3,0),COLORLIGREEN;
+STICKLINE(S3>0,0,-2,3,0),COLORLIBLUE;
+DRAWTEXT(S1>0,-3.3,'1卖'),COLORGREEN;
+DRAWTEXT(S2>0,-2.8,'2卖'),COLORLIGREEN;
+DRAWTEXT(S3>0,-2.3,'3卖'),COLORLIBLUE;
+
+{—— 预警层买点：零轴上方矮柱 ——}
+STICKLINE(PB1>0,0,1.2,3,0),COLORCYAN;
+STICKLINE(PB2>0,0,1,3,0),COLORCYAN;
+STICKLINE(PB3>0,0,0.8,3,0),COLORCYAN;
+DRAWTEXT(PB1>0,1.5,'预1买'),COLORCYAN;
+DRAWTEXT(PB2>0,1.3,'预2买'),COLORCYAN;
+DRAWTEXT(PB3>0,1.1,'预3买'),COLORCYAN;
+
+{—— 预警层卖点：零轴下方矮柱 ——}
+STICKLINE(PS1>0,0,-1.2,3,0),COLORWHITE;
+STICKLINE(PS2>0,0,-1,3,0),COLORWHITE;
+STICKLINE(PS3>0,0,-0.8,3,0),COLORWHITE;
+DRAWTEXT(PS1>0,-1.5,'预1卖'),COLORWHITE;
+DRAWTEXT(PS2>0,-1.3,'预2卖'),COLORWHITE;
+DRAWTEXT(PS3>0,-1.1,'预3卖'),COLORWHITE;
